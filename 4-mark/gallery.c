@@ -11,6 +11,7 @@
 
 const key_t vahter_sem_id = 666;
 const key_t picture_sems_id = 777;
+const int number_of_pictures = 5;
 int gallery_sem, picture_sems;
 
 void stopSignalHandler(int signal) {
@@ -29,7 +30,7 @@ void printError(char *message) {
 
 void deleteAllSemaphores() {
     semctl(gallery_sem, 0, IPC_RMID);
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < number_of_pictures; i++)
         semctl(picture_sems, i, IPC_RMID);
 }
 
@@ -45,10 +46,19 @@ void printGalleryInfo() {
     clearConsole();
     printf("Gallery info:\n");
     printf("There are %d visitors in the gallery.\n", 50 - semctl(gallery_sem, 0, GETVAL) - 1);
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < number_of_pictures; i++) {
         printf("There are %d visitors looking at picture %d.\n",
                10 - semctl(picture_sems, i, GETVAL) - 1, i + 1);
     }
+}
+
+bool isAllTrue(const bool *val) {
+    for (int i = 0; i < number_of_pictures; i++) {
+        if (!val[i]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 struct sembuf operation;
@@ -81,11 +91,11 @@ int main(int argc, char const *argv[]) {
     semctl(gallery_sem, 0, SETVAL, 49);
 
     // Initialize the semaphores for the pictures
-    picture_sems = semget(picture_sems_id, 5, IPC_CREAT | IPC_EXCL | 0644);
+    picture_sems = semget(picture_sems_id, number_of_pictures, IPC_CREAT | IPC_EXCL | 0644);
     if (picture_sems == -1) {
         printError("Could not create semaphore for picture");
     }
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < number_of_pictures; i++) {
         // Set the value of the semaphore to 10 (max number of visitors)
         semctl(picture_sems, i, SETVAL, 9);
     }
@@ -97,13 +107,15 @@ int main(int argc, char const *argv[]) {
         if (visitor_process == -1) {
             printError("Could not create visitor process");
         } else if (visitor_process == 0) {
+            bool visited[number_of_pictures];
+
             // Visitor process
             // Wait for the gallery semaphore to be available
             operation = setSemOperation(0, -1, 0);
             semop(gallery_sem, &operation, 1);
-            // printf("Visitor %d entered the gallery.\n", getpid());
 
-            for (int picture = 0; picture < 5; ++picture) {
+            for (;;) {
+                int picture = getRandomNumber(0, number_of_pictures - 1);
                 // Wait for the semaphore of the picture to be available
                 operation = setSemOperation(picture, -1, 0);
                 semop(picture_sems, &operation, 1);
@@ -114,6 +126,11 @@ int main(int argc, char const *argv[]) {
                 // Release the semaphore of the picture
                 operation = setSemOperation(picture, 1, 0);
                 semop(picture_sems, &operation, 1);
+
+                visited[picture] = true;
+                if (isAllTrue(visited)) {
+                    break;
+                }
             }
 
             // Release the gallery semaphore
