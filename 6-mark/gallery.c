@@ -7,34 +7,26 @@
 #include <signal.h>
 #include <semaphore.h>
 #include <sys/wait.h>
+#include <pthread.h>
 
 #define NUMBER_OF_PICTURES 5
 
-const char vahter_sem_name[] = "/vahter_sem";
-const char picture_sem_name_template[] = "/picture_sem";
+sem_t gallery_sem;
+sem_t picture_sems[NUMBER_OF_PICTURES];
 
-char picture_sem_names[NUMBER_OF_PICTURES][sizeof(picture_sem_name_template) + 1];
-sem_t *gallery_sem_pointer;
+sem_t *gallery_sem_pointer = &gallery_sem;
 sem_t *picture_sems_pointers[NUMBER_OF_PICTURES];
 
-void generatePictureSemNames() {
-    for (int i = 0; i < NUMBER_OF_PICTURES; i++) {
-        sprintf(picture_sem_names[i], "%s%d", picture_sem_name_template, i);
-    }
-}
-
+/// @brief Closes all semaphores.
 void closeAllSems() {
-    sem_close(gallery_sem_pointer);
+    sem_destroy(gallery_sem_pointer);
     for (int i = 0; i < NUMBER_OF_PICTURES; i++) {
-        sem_close(picture_sems_pointers[i]);
-    }
-
-    sem_unlink(vahter_sem_name);
-    for (int i = 0; i < NUMBER_OF_PICTURES; i++) {
-        sem_unlink(picture_sem_names[i]);
+        sem_destroy(picture_sems_pointers[i]);
     }
 }
 
+/// @brief Handles SIGINT signal.
+/// @param signal signal number.
 void stopSignalHandler(int signal) {
     if (signal == SIGINT) {
         printf("SIGINT received. Exiting.\n");
@@ -43,20 +35,28 @@ void stopSignalHandler(int signal) {
     }
 }
 
+/// @brief Prints error message and exits.
+/// @param message error message.
 void printError(char *message) {
     printf("Error: %s\nExiting", message);
     closeAllSems();
     exit(1);
 }
 
+/// @brief Generates random number in range [min, max].
+/// @param min minimum value.
+/// @param max maximum value.
+/// @return random number.
 int getRandomNumber(int min, int max) {
     return rand() % (max - min + 1) + min;
 }
 
+/// @brief Clears console.
 void clearConsole() {
     printf("\033[H\033[J");
 }
 
+/// @brief Prints gallery info.
 void printGalleryInfo() {
     clearConsole();
     int number_of_visitors;
@@ -80,6 +80,9 @@ void printGalleryInfo() {
     }
 }
 
+/// @brief Checks if all values in array are true.
+/// @param val array of bools.
+/// @return true if all values are true, false otherwise.
 bool isAllTrue(const bool *val) {
     for (int i = 0; i < NUMBER_OF_PICTURES; i++) {
         if (!val[i]) {
@@ -89,10 +92,50 @@ bool isAllTrue(const bool *val) {
     return true;
 }
 
+/// @brief The behavior of a visitor in it's process.
+/// @param arg
+/// @return
+void *visitorBehavior(void *arg) {
+    bool visited_pictures[NUMBER_OF_PICTURES];
+    int time_to_stay = getRandomNumber(1, 5);
+
+    // Wait for the gallery to be free
+    sem_wait(gallery_sem_pointer);
+
+    for (;;) {
+        int picture_number = getRandomNumber(0, NUMBER_OF_PICTURES - 1);
+        // Wait for the picture to be free
+        sem_wait(picture_sems_pointers[picture_number]);
+
+        // Look at the picture
+        sleep(time_to_stay);
+        // printGalleryInfo();
+
+        // Leave the picture
+        sem_post(picture_sems_pointers[picture_number]);
+
+        // Mark the picture as visiteD
+        visited_pictures[picture_number] = true;
+
+        // If all pictures have been visited, leave the gallery
+        if (isAllTrue(visited_pictures)) {
+            break;
+        }
+    }
+    printGalleryInfo();
+    // Leave the gallery
+    sem_post(gallery_sem_pointer);
+
+    pthread_exit(NULL);
+}
+
 int main(int argc, char const *argv[]) {
     closeAllSems();
     (void)signal(SIGINT, stopSignalHandler);
-    generatePictureSemNames();
+
+    for (int i = 0; i < NUMBER_OF_PICTURES; i++) {
+        picture_sems_pointers[i] = &picture_sems[i];
+    }
 
     int number_of_visitors;
     // Check if the number of visitors was given as an argument
@@ -102,60 +145,33 @@ int main(int argc, char const *argv[]) {
         printError("Number of visitors was not given as an argument.");
     }
 
+    printf("Number of visitors: %d\n", number_of_visitors);
+
+    pthread_t threads[number_of_visitors];
+
     // Create semaphores
-    gallery_sem_pointer = sem_open(vahter_sem_name, O_CREAT, 0666, 50);
-    if (gallery_sem_pointer == SEM_FAILED) {
+    if (sem_init(gallery_sem_pointer, 1, 50) == -1) {
         printError("Could not create gallery semaphore.");
     }
 
+    // Init picture semaphores
     for (int i = 0; i < NUMBER_OF_PICTURES; i++) {
-        picture_sems_pointers[i] = sem_open(picture_sem_names[i], O_CREAT, 0666, 10);
-        if (picture_sems_pointers[i] == SEM_FAILED) {
+        if (sem_init(picture_sems_pointers[i], 1, 10) == -1) {
             printError("Could not create picture semaphore.");
         }
     }
+
+    // Print initial gallery info.
     printGalleryInfo();
 
     // Create visitors
     for (int i = 0; i < number_of_visitors; i++) {
-        int pid = fork();
-        if (pid == 0) {
-            // Visitor
-            bool visited_pictures[NUMBER_OF_PICTURES];
-            int time_to_stay = getRandomNumber(1, 5);
-
-            // Wait for the gallery to be free
-            sem_wait(gallery_sem_pointer);
-            for (;;) {
-                int picture_number = getRandomNumber(0, NUMBER_OF_PICTURES - 1);
-                // Wait for the picture to be free
-                sem_wait(picture_sems_pointers[picture_number]);
-
-                // Look at the picture
-                sleep(time_to_stay);
-
-                // Leave the picture
-                sem_post(picture_sems_pointers[picture_number]);
-
-                // Mark the picture as visited
-                visited_pictures[picture_number] = true;
-
-                // If all pictures have been visited, leave the gallery
-                if (isAllTrue(visited_pictures)) {
-                    break;
-                }
-            }
-            printGalleryInfo();
-            // Leave the gallery
-            sem_post(gallery_sem_pointer);
-
-            return 0;
-        }
+        pthread_create(&threads[i], NULL, visitorBehavior, NULL);
     }
 
     // Wait for all visitors to leave
     for (int i = 0; i < number_of_visitors; i++) {
-        wait(NULL);
+        pthread_join(threads[i], NULL);
     }
 
     printGalleryInfo();
